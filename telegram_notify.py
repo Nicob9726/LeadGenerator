@@ -30,7 +30,11 @@ def load_top_leads(csv_path: Path) -> list[dict]:
         leads = list(csv.DictReader(f))
 
     # Nur HOT und WARM, sortiert nach Score
-    relevant = [l for l in leads if l.get("priority") in ("HOT", "WARM")]
+    def is_relevant(l):
+        p = l.get("priority_display", l.get("priority", ""))
+        return "HOT" in p or "WARM" in p
+
+    relevant = [l for l in leads if is_relevant(l)]
     relevant.sort(key=lambda l: int(l.get("score", 0) or 0), reverse=True)
     return relevant
 
