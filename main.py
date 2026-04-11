@@ -26,6 +26,7 @@ from tqdm import tqdm
 from src.places_search import PlacesSearcher
 from src.website_analyzer import analyze_website
 from src.lead_scorer import score_all
+from telegram_notify import notify as telegram_notify
 
 load_dotenv(Path(__file__).parent / "config" / ".env")
 
@@ -195,6 +196,9 @@ def main():
 
     # Gefundene IDs als "gesehen" markieren
     save_seen_ids(output_dir, [p["place_id"] for p in scored if p.get("place_id")])
+
+    # Top 5 per Telegram verschicken
+    telegram_notify(csv_path)
 
     print_summary(scored)
 
