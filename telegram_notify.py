@@ -25,47 +25,52 @@ def send_telegram(token: str, chat_id: str, text: str):
     resp.raise_for_status()
 
 
-def load_top_leads(csv_path: Path, n: int = 5) -> list[dict]:
+def load_top_leads(csv_path: Path) -> list[dict]:
     with open(csv_path, newline="", encoding="utf-8") as f:
         leads = list(csv.DictReader(f))
 
     # Nur HOT und WARM, sortiert nach Score
     relevant = [l for l in leads if l.get("priority") in ("HOT", "WARM")]
-    relevant.sort(key=lambda l: int(l.get("score", 0)), reverse=True)
-    return relevant[:n]
+    relevant.sort(key=lambda l: int(l.get("score", 0) or 0), reverse=True)
+    return relevant
 
 
-def format_message(leads: list[dict], csv_path: Path) -> str:
-    date_str = Path(csv_path).stem.replace("leads_", "")
-    lines = [f"<b>🔍 Lead Finder — Top {len(leads)} Leads</b>"]
-    lines.append(f"<i>Lauf vom {date_str}</i>\n")
-
-    for i, lead in enumerate(leads, 1):
-        priority = "🔥" if lead.get("priority") == "HOT" else "⭐"
-        name = lead.get("name", "–")
-        address = lead.get("address", "–")
-        phone = lead.get("phone", "")
-        website = lead.get("website", "")
-        score = lead.get("score", "?")
-        rating = lead.get("rating", "")
-        reviews = lead.get("review_count", "")
-        hours = lead.get("opening_hours", "")
-
-        lines.append(f"{priority} <b>{i}. {name}</b>  [Score: {score}]")
-        lines.append(f"📍 {address}")
-        if rating and reviews:
-            lines.append(f"⭐ {rating} ({reviews} Bewertungen)")
-        if phone:
-            lines.append(f"📞 {phone}")
-        if website:
-            lines.append(f"🌐 {website}")
-        if hours:
-            # Nur erste 2 Tage anzeigen damit es nicht zu lang wird
-            days = hours.split(" | ")[:2]
-            lines.append(f"🕐 {' | '.join(days)}")
-        lines.append("")
-
+def format_lead(i: int, lead: dict) -> str:
+    priority = "🔥" if lead.get("priority") == "HOT" else "⭐"
+    lines = []
+    lines.append(f"{priority} <b>{i}. {lead.get('name', '–')}</b>  [Score: {lead.get('score', '?')}]")
+    lines.append(f"📍 {lead.get('address', '–')}")
+    if lead.get("rating") and lead.get("review_count"):
+        lines.append(f"⭐ {lead['rating']} ({lead['review_count']} Bewertungen)")
+    if lead.get("phone"):
+        lines.append(f"📞 {lead['phone']}")
+    if lead.get("website"):
+        lines.append(f"🌐 {lead['website']}")
+    if lead.get("opening_hours"):
+        days = lead["opening_hours"].split(" | ")[:2]
+        lines.append(f"🕐 {' | '.join(days)}")
     return "\n".join(lines)
+
+
+def split_into_messages(leads: list[dict], csv_path: Path) -> list[str]:
+    """Baut Nachrichten und splittet bei Telegram-Limit (4096 Zeichen)."""
+    date_str = Path(csv_path).stem.replace("leads_", "")
+    header = f"<b>🔍 Lead Finder — {len(leads)} neue Leads</b>\n<i>Lauf vom {date_str}</i>"
+
+    messages = []
+    current = header
+    for i, lead in enumerate(leads, 1):
+        block = "\n\n" + format_lead(i, lead)
+        if len(current) + len(block) > 4000:
+            messages.append(current)
+            current = block.lstrip()
+        else:
+            current += block
+
+    if current:
+        messages.append(current)
+
+    return messages
 
 
 def notify(csv_path: Path):
@@ -81,9 +86,10 @@ def notify(csv_path: Path):
         logger.info("Keine HOT/WARM Leads — keine Telegram-Nachricht")
         return
 
-    message = format_message(leads, csv_path)
-    send_telegram(token, chat_id, message)
-    logger.info(f"✅ Telegram: Top {len(leads)} Leads verschickt")
+    messages = split_into_messages(leads, csv_path)
+    for msg in messages:
+        send_telegram(token, chat_id, msg)
+    logger.info(f"✅ Telegram: {len(leads)} Leads in {len(messages)} Nachrichten verschickt")
 
 
 if __name__ == "__main__":
