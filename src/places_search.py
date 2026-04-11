@@ -1,210 +1,144 @@
 """
-Google Places API - Massagepraxen finden
-Sucht in einem definierten Radius nach Massage/Physio-Praxen
-und extrahiert alle relevanten Geschäftsdaten.
+Google Places API Suche nach Massagepraxen und Physiotherapeuten.
 """
 
-import requests
-import time
 import math
+import time
 import logging
-from typing import Optional
+import requests
 
 logger = logging.getLogger(__name__)
 
+BOOKING_SYSTEMS = [
+    "treatwell", "shore", "doctolib", "timify", "calendly", "acuity",
+    "clinq", "cituro", "terminland", "samedi", "phorest", "fresha",
+    "mindbody", "booksy", "simplybook", "termin-direkt", "setmore",
+    "appointy", "10to8", "reserve.google", "bookingkit", "ebuero",
+    "appointlet", "zocdoc", "jameda",
+]
 
-def search_places(
-    api_key: str,
-    queries: list[str],
-    center_lat: float,
-    center_lng: float,
-    radius_km: int = 50,
-) -> list[dict]:
-    """
-    Sucht nach Businesses via Google Places API (Nearby Search).
-    Teilt große Radien in überlappende Kreise auf für bessere Abdeckung.
-    """
-    all_places = {}
-    
-    # Bei großem Radius: Aufteilen in kleinere Suchkreise (max 50km pro Suche)
-    search_points = _generate_search_grid(center_lat, center_lng, radius_km)
-    
-    logger.info(f"Starte Suche mit {len(queries)} Suchbegriffen an {len(search_points)} Punkten")
-    
-    for query in queries:
-        for i, (lat, lng) in enumerate(search_points):
-            search_radius = min(radius_km, 25) * 1000  # in Metern, max 50km
-            
-            logger.info(f"  Suche '{query}' bei ({lat:.4f}, {lng:.4f}), Radius {search_radius}m...")
-            
-            places = _nearby_search(api_key, query, lat, lng, search_radius)
-            
-            for place in places:
-                pid = place["place_id"]
-                if pid not in all_places:
-                    all_places[pid] = place
-                    
-            # Rate limiting: max 10 Requests pro Sekunde
-            time.sleep(0.2)
-    
-    logger.info(f"Insgesamt {len(all_places)} einzigartige Businesses gefunden")
-    
-    # Details für jeden Place abrufen
-    detailed_places = []
-    for i, (pid, place) in enumerate(all_places.items()):
-        logger.info(f"  Details abrufen [{i+1}/{len(all_places)}]: {place.get('name', 'Unbekannt')}")
-        details = _get_place_details(api_key, pid)
-        if details:
-            merged = {**place, **details}
-            detailed_places.append(merged)
-        time.sleep(0.15)  # Rate limiting
-    
-    return detailed_places
+SEARCH_KEYWORDS = [
+    "Massagepraxis",
+    "Massage",
+    "Physiotherapie",
+    "Wellness Massage",
+    "Thai Massage",
+    "Osteopathie",
+]
 
 
-def _generate_search_grid(center_lat: float, center_lng: float, radius_km: int) -> list[tuple]:
-    """
-    Generiert ein Raster von Suchpunkten, um einen großen Radius abzudecken.
-    Google Places API liefert max 60 Ergebnisse pro Suche,
-    also brauchen wir mehrere überlappende Kreise.
-    """
-    if radius_km <= 25:
-        return [(center_lat, center_lng)]
-    
-    points = [(center_lat, center_lng)]  # Zentrum immer dabei
-    
-    # Ringe um das Zentrum erstellen
-    ring_distance_km = 20  # Abstand zwischen Ringen
-    num_rings = math.ceil(radius_km / ring_distance_km)
-    
-    for ring in range(1, num_rings + 1):
-        ring_radius_km = ring * ring_distance_km
-        if ring_radius_km > radius_km:
-            ring_radius_km = radius_km
-            
-        # Punkte auf dem Ring gleichmäßig verteilen
-        num_points = max(6, ring * 6)
-        for j in range(num_points):
-            angle = (2 * math.pi * j) / num_points
-            
-            # Ungefähre Umrechnung km -> Grad
-            delta_lat = (ring_radius_km * math.cos(angle)) / 111.0
-            delta_lng = (ring_radius_km * math.sin(angle)) / (111.0 * math.cos(math.radians(center_lat)))
-            
-            points.append((center_lat + delta_lat, center_lng + delta_lng))
-    
-    return points
+def haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Berechnet Distanz in km zwischen zwei GPS-Koordinaten."""
+    R = 6371
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1))
+         * math.cos(math.radians(lat2))
+         * math.sin(dlng / 2) ** 2)
+    return R * 2 * math.asin(math.sqrt(a))
 
 
-def _nearby_search(
-    api_key: str,
-    query: str,
-    lat: float,
-    lng: float,
-    radius: int,
-) -> list[dict]:
-    """
-    Führt eine Google Places Nearby Search durch.
-    Paginiert automatisch (max 60 Ergebnisse).
-    """
-    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-    
-    params = {
-        "key": api_key,
-        "location": f"{lat},{lng}",
-        "radius": radius,
-        "keyword": query,
-        "language": "de",
-    }
-    
-    all_results = []
-    
-    try:
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        
-        if data.get("status") not in ("OK", "ZERO_RESULTS"):
-            logger.warning(f"API Status: {data.get('status')} - {data.get('error_message', '')}")
-            return []
-        
-        results = data.get("results", [])
-        all_results.extend(_parse_basic_results(results))
-        
-        # Pagination (Google gibt max 20 pro Seite, bis zu 3 Seiten = 60)
-        while "next_page_token" in data and len(all_results) < 60:
-            time.sleep(2)  # Google braucht ~2s bis next_page_token gültig ist
-            params = {
-                "key": api_key,
-                "pagetoken": data["next_page_token"],
-            }
-            response = requests.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            results = data.get("results", [])
-            all_results.extend(_parse_basic_results(results))
-    
-    except requests.RequestException as e:
-        logger.error(f"API-Fehler bei Nearby Search: {e}")
-    
-    return all_results
+class PlacesSearcher:
+    BASE_URL = "https://maps.googleapis.com/maps/api/place"
 
+    def __init__(self, api_key: str, lat: float, lng: float, radius_km: int = 50,
+                 verbose: bool = False):
+        self.api_key = api_key
+        self.lat = lat
+        self.lng = lng
+        self.radius_m = radius_km * 1000
+        self.verbose = verbose
 
-def _parse_basic_results(results: list) -> list[dict]:
-    """Parst die Basis-Ergebnisse der Nearby Search."""
-    places = []
-    for r in results:
-        place = {
-            "place_id": r.get("place_id"),
-            "name": r.get("name", ""),
-            "address": r.get("vicinity", ""),
-            "lat": r.get("geometry", {}).get("location", {}).get("lat"),
-            "lng": r.get("geometry", {}).get("location", {}).get("lng"),
-            "rating": r.get("rating", 0),
-            "review_count": r.get("user_ratings_total", 0),
-            "types": r.get("types", []),
-            "business_status": r.get("business_status", "UNKNOWN"),
+    def _nearby_search(self, keyword: str, page_token: str = None) -> dict:
+        params = {
+            "location": f"{self.lat},{self.lng}",
+            "radius": self.radius_m,
+            "keyword": keyword,
+            "language": "de",
+            "key": self.api_key,
         }
-        
-        # Nur aktive Businesses
-        if place["business_status"] == "OPERATIONAL":
-            places.append(place)
-    
-    return places
+        if page_token:
+            params["pagetoken"] = page_token
+        resp = requests.get(f"{self.BASE_URL}/nearbysearch/json", params=params, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
 
-
-def _get_place_details(api_key: str, place_id: str) -> Optional[dict]:
-    """
-    Ruft detaillierte Informationen zu einem Place ab:
-    Telefon, Website, Öffnungszeiten, etc.
-    """
-    url = "https://maps.googleapis.com/maps/api/place/details/json"
-    
-    params = {
-        "key": api_key,
-        "place_id": place_id,
-        "fields": "formatted_phone_number,website,url,opening_hours,formatted_address",
-        "language": "de",
-    }
-    
-    try:
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        
-        if data.get("status") != "OK":
-            return None
-        
-        result = data.get("result", {})
-        
-        return {
-            "phone": result.get("formatted_phone_number", ""),
-            "website": result.get("website", ""),
-            "google_maps_url": result.get("url", ""),
-            "full_address": result.get("formatted_address", ""),
-            "opening_hours": result.get("opening_hours", {}).get("weekday_text", []),
+    def _place_details(self, place_id: str) -> dict:
+        params = {
+            "place_id": place_id,
+            "fields": "name,formatted_address,formatted_phone_number,website,rating,user_ratings_total,geometry,opening_hours",
+            "language": "de",
+            "key": self.api_key,
         }
-    
-    except requests.RequestException as e:
-        logger.error(f"API-Fehler bei Place Details: {e}")
-        return None
+        resp = requests.get(f"{self.BASE_URL}/details/json", params=params, timeout=15)
+        resp.raise_for_status()
+        return resp.json().get("result", {})
+
+    def search_all(self, keywords: list = None) -> list[dict]:
+        """Sucht mit allen Keywords und dedupliziert Ergebnisse."""
+        keywords = keywords or SEARCH_KEYWORDS
+        seen_ids = set()
+        places = []
+
+        for keyword in keywords:
+            logger.info(f"Suche: '{keyword}'")
+            page_token = None
+            page = 0
+
+            while True:
+                if page_token:
+                    time.sleep(2)  # Google braucht kurze Pause vor page_token
+
+                data = self._nearby_search(keyword, page_token)
+                status = data.get("status")
+
+                if status not in ("OK", "ZERO_RESULTS"):
+                    logger.warning(f"API Status '{status}' für '{keyword}'")
+                    break
+
+                for result in data.get("results", []):
+                    pid = result["place_id"]
+                    if pid not in seen_ids:
+                        seen_ids.add(pid)
+                        places.append(result)
+
+                page_token = data.get("next_page_token")
+                page += 1
+                if not page_token or page >= 3:  # max 3 Seiten = 60 Ergebnisse pro Keyword
+                    break
+
+        logger.info(f"{len(places)} einzigartige Orte gefunden")
+        return places
+
+    def enrich_with_details(self, places: list[dict]) -> list[dict]:
+        """Holt Details (Telefon, Website, Rating) für jeden Ort."""
+        enriched = []
+        for i, place in enumerate(places):
+            pid = place["place_id"]
+            if self.verbose:
+                logger.info(f"Details [{i+1}/{len(places)}]: {place.get('name', '?')}")
+
+            details = self._place_details(pid)
+            loc = place.get("geometry", {}).get("location", {})
+            dist = haversine_distance(
+                self.lat, self.lng,
+                loc.get("lat", 0), loc.get("lng", 0)
+            )
+
+            enriched.append({
+                "place_id": pid,
+                "name": details.get("name") or place.get("name", ""),
+                "address": details.get("formatted_address") or place.get("vicinity", ""),
+                "phone": details.get("formatted_phone_number", ""),
+                "website": details.get("website", ""),
+                "rating": details.get("rating") or place.get("rating", 0),
+                "review_count": details.get("user_ratings_total") or place.get("user_ratings_total", 0),
+                "lat": loc.get("lat", 0),
+                "lng": loc.get("lng", 0),
+                "distance_km": round(dist, 1),
+                "opening_hours": " | ".join(details.get("opening_hours", {}).get("weekday_text", [])),
+            })
+            time.sleep(0.1)  # sanftes Rate-Limiting
+
+        return enriched

@@ -1,16 +1,8 @@
-version: '3.8'
-
 services:
   lead-finder:
     build: .
-    container_name: lead-finder
     env_file:
       - config/.env
     volumes:
       - ./output:/app/output
-      - ./config:/app/config
-    # Standard: Voller Durchlauf
-    # Überschreibe command für andere Modi:
-    #   command: ["python", "main.py", "--radius", "30"]
-    #   command: ["python", "main.py", "--skip-website-check"]
-    #   command: ["python", "main.py", "--input", "output/alte_liste.csv"]
+    command: python main.py
