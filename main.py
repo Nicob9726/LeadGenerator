@@ -158,8 +158,13 @@ def main():
             log.info("Keine neuen Praxen gefunden — alle wurden bereits in früheren Läufen entdeckt.")
             sys.exit(0)
 
-        log.info(f"Hole Details für {len(new_results)} neue Orte ...")
-        raw_places = searcher.enrich_with_details(new_results)
+        # Pro Lauf max. 50 neue Praxen verarbeiten
+        batch = new_results[:50]
+        if len(new_results) > 50:
+            log.info(f"Verarbeite 50 von {len(new_results)} neuen Praxen (Rest kommt nächste Woche)")
+
+        log.info(f"Hole Details für {len(batch)} neue Orte ...")
+        raw_places = searcher.enrich_with_details(batch)
 
     # --- Schritt 2: Website-Check ---
     if args.skip_website_check:
