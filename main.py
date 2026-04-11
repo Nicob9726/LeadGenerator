@@ -60,6 +60,22 @@ def load_from_csv(path: str) -> list[dict]:
         return list(csv.DictReader(f))
 
 
+def load_seen_ids(output_dir: Path) -> set:
+    """Lädt alle place_ids die in früheren Läufen bereits gefunden wurden."""
+    seen_file = output_dir / "seen_leads.txt"
+    if not seen_file.exists():
+        return set()
+    return set(seen_file.read_text(encoding="utf-8").splitlines())
+
+
+def save_seen_ids(output_dir: Path, new_ids: list[str]):
+    """Fügt neue place_ids zur gesehen-Liste hinzu."""
+    seen_file = output_dir / "seen_leads.txt"
+    existing = load_seen_ids(output_dir)
+    all_ids = existing | set(new_ids)
+    seen_file.write_text("\n".join(sorted(all_ids)), encoding="utf-8")
+
+
 def save_results(leads: list[dict], output_dir: Path, base_name: str):
     output_dir.mkdir(exist_ok=True)
     csv_path = output_dir / f"{base_name}.csv"
@@ -132,8 +148,18 @@ def main():
         log.info(f"Starte Google Maps Suche ({radius}km Radius um {lat},{lng})")
         searcher = PlacesSearcher(api_key, lat, lng, radius, verbose=args.verbose)
         raw_results = searcher.search_all()
-        log.info(f"Hole Details für {len(raw_results)} Orte ...")
-        raw_places = searcher.enrich_with_details(raw_results)
+
+        # Bereits gesehene Praxen rausfiltern
+        seen_ids = load_seen_ids(output_dir)
+        new_results = [r for r in raw_results if r["place_id"] not in seen_ids]
+        log.info(f"{len(raw_results)} gefunden, {len(raw_results) - len(new_results)} bereits bekannt, {len(new_results)} neu")
+
+        if not new_results:
+            log.info("Keine neuen Praxen gefunden — alle wurden bereits in früheren Läufen entdeckt.")
+            sys.exit(0)
+
+        log.info(f"Hole Details für {len(new_results)} neue Orte ...")
+        raw_places = searcher.enrich_with_details(new_results)
 
     # --- Schritt 2: Website-Check ---
     if args.skip_website_check:
@@ -161,6 +187,9 @@ def main():
     csv_path, json_path = save_results(scored, output_dir, base_name)
     log.info(f"CSV  → {csv_path}")
     log.info(f"JSON → {json_path}")
+
+    # Gefundene IDs als "gesehen" markieren
+    save_seen_ids(output_dir, [p["place_id"] for p in scored if p.get("place_id")])
 
     print_summary(scored)
 
