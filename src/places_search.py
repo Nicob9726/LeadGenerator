@@ -50,10 +50,32 @@ class PlacesSearcher:
         self.radius_m = radius_km * 1000
         self.verbose = verbose
 
-    def _nearby_search(self, keyword: str, page_token: str = None) -> dict:
+    def _generate_grid(self) -> list[tuple]:
+        """Teilt den Suchradius in überlappende Kreise auf (max 25km pro Kreis)."""
+        radius_km = self.radius_m / 1000
+        if radius_km <= 25:
+            return [(self.lat, self.lng)]
+
+        points = [(self.lat, self.lng)]
+        ring_distance_km = 20
+        num_rings = math.ceil(radius_km / ring_distance_km)
+
+        for ring in range(1, num_rings + 1):
+            ring_radius_km = min(ring * ring_distance_km, radius_km)
+            num_points = max(6, ring * 6)
+            for j in range(num_points):
+                angle = (2 * math.pi * j) / num_points
+                delta_lat = (ring_radius_km * math.cos(angle)) / 111.0
+                delta_lng = (ring_radius_km * math.sin(angle)) / (111.0 * math.cos(math.radians(self.lat)))
+                points.append((self.lat + delta_lat, self.lng + delta_lng))
+
+        return points
+
+    def _nearby_search(self, keyword: str, lat: float, lng: float, page_token: str = None) -> dict:
+        search_radius = min(self.radius_m, 25000)  # max 25km pro Einzelsuche
         params = {
-            "location": f"{self.lat},{self.lng}",
-            "radius": self.radius_m,
+            "location": f"{lat},{lng}",
+            "radius": search_radius,
             "keyword": keyword,
             "language": "de",
             "key": self.api_key,
@@ -76,37 +98,43 @@ class PlacesSearcher:
         return resp.json().get("result", {})
 
     def search_all(self, keywords: list = None) -> list[dict]:
-        """Sucht mit allen Keywords und dedupliziert Ergebnisse."""
+        """Sucht mit allen Keywords an allen Gitterpunkten und dedupliziert Ergebnisse."""
         keywords = keywords or SEARCH_KEYWORDS
+        grid = self._generate_grid()
         seen_ids = set()
         places = []
 
+        logger.info(f"Suchgitter: {len(grid)} Punkte × {len(keywords)} Keywords")
+
         for keyword in keywords:
-            logger.info(f"Suche: '{keyword}'")
-            page_token = None
-            page = 0
+            for point_idx, (lat, lng) in enumerate(grid):
+                logger.info(f"Suche '{keyword}' [{point_idx+1}/{len(grid)}] bei ({lat:.3f}, {lng:.3f})")
+                page_token = None
+                page = 0
 
-            while True:
-                if page_token:
-                    time.sleep(2)  # Google braucht kurze Pause vor page_token
+                while True:
+                    if page_token:
+                        time.sleep(2)  # Google braucht kurze Pause vor page_token
 
-                data = self._nearby_search(keyword, page_token)
-                status = data.get("status")
+                    data = self._nearby_search(keyword, lat, lng, page_token)
+                    status = data.get("status")
 
-                if status not in ("OK", "ZERO_RESULTS"):
-                    logger.warning(f"API Status '{status}' für '{keyword}'")
-                    break
+                    if status not in ("OK", "ZERO_RESULTS"):
+                        logger.warning(f"API Status '{status}' für '{keyword}'")
+                        break
 
-                for result in data.get("results", []):
-                    pid = result["place_id"]
-                    if pid not in seen_ids:
-                        seen_ids.add(pid)
-                        places.append(result)
+                    for result in data.get("results", []):
+                        pid = result["place_id"]
+                        if pid not in seen_ids:
+                            seen_ids.add(pid)
+                            places.append(result)
 
-                page_token = data.get("next_page_token")
-                page += 1
-                if not page_token or page >= 3:  # max 3 Seiten = 60 Ergebnisse pro Keyword
-                    break
+                    page_token = data.get("next_page_token")
+                    page += 1
+                    if not page_token or page >= 3:
+                        break
+
+                time.sleep(0.2)
 
         logger.info(f"{len(places)} einzigartige Orte gefunden")
         return places
