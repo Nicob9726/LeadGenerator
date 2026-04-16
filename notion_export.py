@@ -166,6 +166,65 @@ def _add_lead(database_id: str, lead: dict):
     resp.raise_for_status()
 
 
+REQUIRED_PROPERTIES = {
+    "Priorität": {
+        "select": {
+            "options": [
+                {"name": "🔥 HOT",  "color": "red"},
+                {"name": "⭐ WARM", "color": "yellow"},
+                {"name": "❄️ COLD", "color": "blue"},
+                {"name": "⛔ SKIP", "color": "gray"},
+            ]
+        }
+    },
+    "Status": {
+        "select": {
+            "options": [
+                {"name": "Neu",              "color": "blue"},
+                {"name": "Kontaktiert",      "color": "yellow"},
+                {"name": "Antwort erhalten", "color": "orange"},
+                {"name": "Kein Interesse",   "color": "red"},
+                {"name": "Abschluss",        "color": "green"},
+            ]
+        }
+    },
+    "Score":           {"number": {"format": "number"}},
+    "Telefon":         {"phone_number": {}},
+    "E-Mail":          {"email": {}},
+    "Website":         {"url": {}},
+    "Adresse":         {"rich_text": {}},
+    "Entfernung (km)": {"number": {"format": "number"}},
+    "Bewertungen":     {"number": {"format": "number"}},
+    "Rating":          {"number": {"format": "number"}},
+    "Buchungssystem":  {"checkbox": {}},
+    "Notizen":         {"rich_text": {}},
+    "Place ID":        {"rich_text": {}},
+}
+
+
+def ensure_database_schema(database_id: str):
+    """Fügt fehlende Spalten zur bestehenden Datenbank hinzu."""
+    resp = requests.get(
+        f"https://api.notion.com/v1/databases/{database_id}",
+        headers=_headers(), timeout=15,
+    )
+    resp.raise_for_status()
+    existing = set(resp.json().get("properties", {}).keys())
+
+    missing = {k: v for k, v in REQUIRED_PROPERTIES.items() if k not in existing}
+    if not missing:
+        return
+
+    log.info(f"Notion: Füge {len(missing)} fehlende Spalten hinzu: {list(missing.keys())}")
+    patch_resp = requests.patch(
+        f"https://api.notion.com/v1/databases/{database_id}",
+        headers=_headers(),
+        json={"properties": missing},
+        timeout=30,
+    )
+    patch_resp.raise_for_status()
+
+
 def _is_existing_database(notion_id: str) -> bool:
     """Prüft ob die ID bereits eine Notion-Datenbank ist."""
     resp = requests.get(
@@ -191,7 +250,6 @@ def notify(json_path: Path):
 
     # Datenbank-ID auflösen
     if not NOTION_DATABASE_ID:
-        # Prüfen ob NOTION_PAGE_ID schon eine Datenbank ist
         if _is_existing_database(NOTION_PAGE_ID):
             log.info("Notion: Vorhandene Datenbank erkannt — nutze direkt.")
             NOTION_DATABASE_ID = NOTION_PAGE_ID
@@ -200,6 +258,9 @@ def notify(json_path: Path):
             log.info("Erstelle neue Notion-Datenbank ...")
             NOTION_DATABASE_ID = create_database(NOTION_PAGE_ID)
             _save_database_id(NOTION_DATABASE_ID)
+
+    # Sicherstellen dass alle Spalten vorhanden sind
+    ensure_database_schema(NOTION_DATABASE_ID)
 
     with open(json_path, encoding="utf-8") as f:
         leads = json.load(f)
