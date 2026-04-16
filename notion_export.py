@@ -166,6 +166,15 @@ def _add_lead(database_id: str, lead: dict):
     resp.raise_for_status()
 
 
+def _is_existing_database(notion_id: str) -> bool:
+    """Prüft ob die ID bereits eine Notion-Datenbank ist."""
+    resp = requests.get(
+        f"https://api.notion.com/v1/databases/{notion_id}",
+        headers=_headers(), timeout=15,
+    )
+    return resp.status_code == 200
+
+
 def notify(json_path: Path):
     """
     Hauptfunktion: Importiert HOT/WARM Leads aus der JSON-Datei nach Notion.
@@ -180,11 +189,17 @@ def notify(json_path: Path):
         log.warning("Notion: NOTION_PAGE_ID fehlt — überspringe Export.")
         return
 
-    # Datenbank beim ersten Mal erstellen
+    # Datenbank-ID auflösen
     if not NOTION_DATABASE_ID:
-        log.info("Erstelle Notion-Datenbank ...")
-        NOTION_DATABASE_ID = create_database(NOTION_PAGE_ID)
-        _save_database_id(NOTION_DATABASE_ID)
+        # Prüfen ob NOTION_PAGE_ID schon eine Datenbank ist
+        if _is_existing_database(NOTION_PAGE_ID):
+            log.info("Notion: Vorhandene Datenbank erkannt — nutze direkt.")
+            NOTION_DATABASE_ID = NOTION_PAGE_ID
+            _save_database_id(NOTION_DATABASE_ID)
+        else:
+            log.info("Erstelle neue Notion-Datenbank ...")
+            NOTION_DATABASE_ID = create_database(NOTION_PAGE_ID)
+            _save_database_id(NOTION_DATABASE_ID)
 
     with open(json_path, encoding="utf-8") as f:
         leads = json.load(f)
