@@ -27,6 +27,7 @@ from src.places_search import PlacesSearcher
 from src.website_analyzer import analyze_website
 from src.lead_scorer import score_all
 from telegram_notify import notify as telegram_notify
+from notion_export import notify as notion_notify
 
 load_dotenv(Path(__file__).parent / "config" / ".env")
 
@@ -199,6 +200,9 @@ def main():
 
     # Top 5 per Telegram verschicken
     telegram_notify(csv_path)
+
+    # HOT/WARM Leads nach Notion exportieren
+    notion_notify(json_path)
 
     print_summary(scored)
 
